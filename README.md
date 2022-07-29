@@ -20,13 +20,13 @@ optional arguments:
   --dataset DATASET     Dataset type (lipophilicity or solubility).
 ```
 
-Training results on lipophilicity:
+Training results on lipophilicity using QSAR:
 
 ![](./screenshots/sampn_lipophilicity_train_loss.png)
 
 ![](./screenshots/sampn_lipophilicity_val_loss.png)
 
-Training results on aqueous solubility:
+Training results on aqueous solubility using QSAR:
 
 ![](./screenshots/sampn_solubility_train_loss.png)
 
