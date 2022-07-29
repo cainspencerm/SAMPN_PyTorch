@@ -1,12 +1,107 @@
+import numpy as np
 import utils  # local import
 
 from torch import nn
 import rdkit.Chem as Chem
 import torch.nn.functional as F
 import torch
-import numpy as np
-from typing import List, Tuple, Union
 from typing import List, Union
+from typing import List, Union
+import dgl
+from dgl.nn.pytorch.conv import GATConv
+from dgl.nn.pytorch.glob import AvgPooling, MaxPooling
+
+
+class QSARPlus(nn.Module):
+    def __init__(self, hidden_size=139):
+        super().__init__()
+
+        self.hidden_size = hidden_size
+
+        self.gat_1 = GATConv(139, 139, num_heads=1, activation=F.elu)
+        self.gat_2 = GATConv(139, 139, num_heads=1, activation=F.elu)
+        self.avg_pool = MaxPooling()
+
+        self._create_ffn()
+
+    def _create_ffn(self, ffn_num_layers=2, ffn_hidden_size=300):
+        """
+        Creates the feed-forward network for the model.
+
+        :param features_only: Whether to use only the features or also the hidden states.
+        :param features_size: The size of the features.
+        :param use_input_features: Whether to use the input features or not.
+        :param features_dim: The dimension of the features.
+        :param dropout: The dropout probability.
+        :param activation: The activation function.
+        :param ffn_num_layers: The number of layers in the feed-forward network.
+        :param ffn_hidden_size: The size of the hidden layers in the feed-forward network.
+        """
+
+        first_linear_dim = self.hidden_size
+
+        dropout = nn.Dropout(0.25)
+        activation = nn.ReLU()
+
+        if ffn_num_layers == 1:
+            ffn = [
+                dropout,
+                nn.Linear(first_linear_dim, 1)
+            ]
+        else:
+            ffn = [
+                dropout,
+                nn.Linear(first_linear_dim, ffn_hidden_size)
+            ]
+            for _ in range(ffn_num_layers - 2):
+                ffn.extend([
+                    activation,
+                    dropout,
+                    nn.Linear(ffn_hidden_size, ffn_hidden_size),
+                ])
+            ffn.extend([
+                activation,
+                dropout,
+                nn.Linear(ffn_hidden_size, 1),
+            ])
+
+        self.ffn = nn.Sequential(*ffn)
+
+    def forward(self, smile: str, device: Union[str, torch.device] = 'cpu') -> torch.Tensor:
+        if not isinstance(smile, str):
+            smile = smile[0]
+            
+        # Convert molecule to meaningful tensors.
+        molecule = Chem.MolFromSmiles(smile)
+            
+        # Construct the molecular graph.
+        graph = utils.get_graph(molecule)
+        graph = dgl.add_self_loop(graph).to(device)
+
+        # Get the atom features.
+        atoms = molecule.GetAtoms()
+        atom_features = [None for _ in range(molecule.GetNumAtoms())]
+        for atom in atoms:
+            atom_id = atom.GetIdx()
+            atom_features[atom_id] = get_atom_features(atom)
+
+        u_feats, v_feats = [], []
+        for u, v in zip(*graph.edges()):
+            u_feats.append(atom_features[u])
+            v_feats.append(atom_features[v])
+
+        atom_features = torch.tensor(np.array(atom_features), dtype=torch.float).to(device)
+
+        # Pass the molecules through the GAT convolutional layers.
+        gat_1_out = self.gat_1(graph, atom_features).squeeze()
+        gat_2_out = self.gat_2(graph, gat_1_out).squeeze()
+
+        gat_out = self.avg_pool(graph, gat_2_out).squeeze()
+
+        # Pass the molecules through the feed-forward network.
+        ffn_out = self.ffn(gat_out)
+
+        return ffn_out
 
 
 class QSAR(nn.Module):
@@ -77,7 +172,7 @@ class QSAR(nn.Module):
     def forward(self, mol_batch, device=None):
         """
         Forward pass of the model.
-        :param mol_batch: A batch of molecules.
+        :param mol_batch: A batch of molecule smiles.
         :return: The logits of the model.
         """
         # Get the features of the molecules.
@@ -100,8 +195,7 @@ def onek_encoding_unk(x, allowable_set):
         x = allowable_set[-1]
     return [x == s for s in allowable_set]
 
-def atom_features(atom):
-
+def get_atom_features(atom):
     return onek_encoding_unk(atom.GetAtomicNum() , ELEM_LIST) + onek_encoding_unk(atom.GetDegree(), [0, 1, 2, 3, 4, 5])+ onek_encoding_unk(atom.GetFormalCharge(), [-1, -2, 1, 2, 0]) + onek_encoding_unk(int(atom.GetChiralTag()), [0, 1, 2, 3])+onek_encoding_unk(int(atom.GetHybridization()),[
         Chem.rdchem.HybridizationType.SP,
         Chem.rdchem.HybridizationType.SP2,
@@ -110,7 +204,7 @@ def atom_features(atom):
         Chem.rdchem.HybridizationType.SP3D2
     ])+[1 if atom.GetIsAromatic() else 0]
 
-def bond_features(bond):
+def get_bond_features(bond):
     bt = bond.GetBondType()
     stereo = int(bond.GetStereo())
     fbond = [bt == Chem.rdchem.BondType.SINGLE, bt == Chem.rdchem.BondType.DOUBLE, bt == Chem.rdchem.BondType.TRIPLE, bt == Chem.rdchem.BondType.AROMATIC, bond.IsInRing()]
@@ -127,8 +221,8 @@ class MolGraph:
     - smiles: Smiles string.
     - n_atoms: The number of atoms in the molecule.
     - n_bonds: The number of bonds in the molecule.
-    - f_atoms: A mapping from an atom index to a list atom features.
-    - f_bonds: A mapping from a bond index to a list of bond features.
+    - atom_features: Atom features.
+    - bond_features: Bond features.
     - a2b: A mapping from an atom index to a list of incoming bond indices.
     - b2a: A mapping from a bond index to the index of the atom the bond originates from.
     - b2revb: A mapping from a bond index to the index of the reverse bond.
@@ -144,34 +238,38 @@ class MolGraph:
         self.smiles = smiles
         self.n_atoms = 0
         self.n_bonds = 0
-        self.f_atoms = []
-        self.f_bonds = []
+        self.atom_features = []
+        self.bond_features = []
         self.a2b = []
         self.b2a = []
         self.b2revb = []
 
+        # Create the graph structure.
         mol = Chem.MolFromSmiles(smiles)
 
         self.n_atoms = mol.GetNumAtoms()
+
+        # Compute the atom features.
         for i, atom in enumerate(mol.GetAtoms()):
-            self.f_atoms.append(atom_features(atom))
-        self.f_atoms = [self.f_atoms[i] for i in range(self.n_atoms)]
+            self.atom_features.append(get_atom_features(atom))
+        self.atom_features = [self.atom_features[i] for i in range(self.n_atoms)]
 
         for _ in range(self.n_atoms):
             self.a2b.append([])
 
+        # Compute the bond features.
         for a1 in range(self.n_atoms):
             for a2 in range(a1 + 1, self.n_atoms):
                 bond = mol.GetBondBetweenAtoms(a1, a2)
                 if bond is None:
                     continue
-                f_bond = bond_features(bond)
+                bond_feature = get_bond_features(bond)
                 if atom_messages:
-                    self.f_bonds.append(f_bond)
-                    self.f_bonds.append(f_bond)
+                    self.bond_features.append(bond_feature)
+                    self.bond_features.append(bond_feature)
                 else:
-                    self.f_bonds.append(self.f_atoms[a1] + f_bond)
-                    self.f_bonds.append(self.f_atoms[a2] + f_bond)
+                    self.bond_features.append(self.atom_features[a1] + bond_feature)
+                    self.bond_features.append(self.atom_features[a2] + bond_feature)
 
                 b1 = self.n_bonds
                 b2 = b1 + 1
@@ -183,7 +281,6 @@ class MolGraph:
                 self.b2revb.append(b2)
                 self.b2revb.append(b1)
                 self.n_bonds += 2
-
 
 class BatchMolGraph:
     """
@@ -202,26 +299,24 @@ class BatchMolGraph:
     """
 
     def __init__(self, mol_graphs: List[MolGraph], atom_messages):
-        self.smiles_batch = [mol_graph.smiles for mol_graph in mol_graphs]
-        self.n_mols = len(self.smiles_batch)
+        bond_fdim = BOND_FDIM + (not atom_messages) * ATOM_FDIM
 
-        self.atom_fdim = ATOM_FDIM
-        self.bond_fdim = BOND_FDIM + (not atom_messages) * self.atom_fdim
-
+        # Initialize the attributes with a blank node.
         self.n_atoms = 1
         self.n_bonds = 1
 
-        f_atoms = [[0] * self.atom_fdim]
-        f_bonds = [[0] * self.bond_fdim]
+        atom_features = [[0] * ATOM_FDIM]
+        bond_features = [[0] * bond_fdim]
         self.a_scope = []
         self.b_scope = []
 
+        # Compute the features in the batch.
         a2b = [[]]
         b2a = [0]
         b2revb = [0]
         for mol_graph in mol_graphs:
-            f_atoms.extend(mol_graph.f_atoms)
-            f_bonds.extend(mol_graph.f_bonds)
+            atom_features.extend(mol_graph.atom_features)
+            bond_features.extend(mol_graph.bond_features)
 
             for a in range(mol_graph.n_atoms):
                 a2b.append([b + self.n_bonds for b in mol_graph.a2b[a]])
@@ -237,26 +332,17 @@ class BatchMolGraph:
 
         self.max_num_bonds = max(len(in_bonds) for in_bonds in a2b)
 
-        self.f_atoms = torch.FloatTensor(f_atoms)
-        self.f_bonds = torch.FloatTensor(f_bonds)
-        self.a2b = torch.LongTensor([a2b[a] + [0] * (self.max_num_bonds - len(a2b[a])) for a in range(self.n_atoms)])
+        self.atom_features = torch.FloatTensor(atom_features)
+        self.bond_features = torch.FloatTensor(bond_features)
 
+        # This is a long way of computing the adjacency matrix.
+        self.a2b = torch.LongTensor([a2b[a] + [0] * (self.max_num_bonds - len(a2b[a])) for a in range(self.n_atoms)])
         self.b2a = torch.LongTensor(b2a)
         self.b2revb = torch.LongTensor(b2revb)
+
+        # Computed lazily.
         self.b2b = None
         self.a2a = None
-
-
-    def get_components(self) -> Tuple[torch.FloatTensor, torch.FloatTensor,
-                                      torch.LongTensor, torch.LongTensor, torch.LongTensor,
-                                      List[Tuple[int, int]], List[Tuple[int, int]]]:
-        """
-        Returns the components of the BatchMolGraph.
-
-        :return: A tuple containing PyTorch tensors with the atom features, bond features, and graph structure
-        and two lists indicating the scope of the atoms and bonds (i.e. which molecules they belong to).
-        """
-        return self.f_atoms, self.f_bonds, self.a2b, self.b2a, self.b2revb, self.a_scope, self.b_scope
 
     def get_b2b(self) -> torch.LongTensor:
         """
@@ -272,20 +358,24 @@ class BatchMolGraph:
 
         return self.b2b
 
-    def get_a2a(self) -> torch.LongTensor:
+    def get_neighbors(self) -> torch.LongTensor:
         """
         Computes (if necessary) and returns a mapping from each atom index to all neighboring atom indices.
 
         :return: A PyTorch tensor containing the mapping from each bond index to all the incodming bond indices.
         """
         if self.a2a is None:
+
             a2neia=[]
-            for incoming_bondIdList in self.a2b:
+            for incoming_bonds in self.a2b:
+
                 neia=[]
-                for incoming_bondId in incoming_bondIdList:
-                    neia.append(self.b2a[incoming_bondId])
+                for incoming_bond in incoming_bonds:
+                    neia.append(self.b2a[incoming_bond])
+
                 a2neia.append(neia)
-            self.a2a=a2neia
+
+            self.a2a = a2neia
 
         return self.a2a
 
@@ -310,7 +400,7 @@ def mol2graph(smiles_batch: List[str], atom_messages) -> BatchMolGraph:
 class MPNEncoder(nn.Module):
     """A message passing neural network for encoding a molecule."""
 
-    def __init__(self, atom_fdim: int, bond_fdim: int, hidden_size=384, depth=4, dropout=.0, layers_per_message=1, undirected=False, atom_messages=False, features_only=False, use_input_features=None, normalize_messages=False, diff_depth_weights=True, layer_norm=False, attention=True, sumstyle=True):
+    def __init__(self, atom_fdim: int, bond_fdim: int, hidden_size=384, depth=4, dropout=.0, layers_per_message=1, undirected=False, atom_messages=False, normalize_messages=False, diff_depth_weights=True, layer_norm=False, attention=True, sumstyle=True):
         """Initializes the MPNEncoder.
 
         :param atom_fdim: Atom features dimension.
@@ -325,15 +415,10 @@ class MPNEncoder(nn.Module):
         self.layers_per_message = layers_per_message
         self.undirected = undirected
         self.atom_messages = atom_messages
-        self.features_only = features_only
-        self.use_input_features = use_input_features
         self.normalize_messages=normalize_messages
         self.diff_depth_weights=diff_depth_weights
         self.attention = attention
         self.sumstyle=sumstyle
-
-        if self.features_only:
-            return
 
         self.layer_norm = nn.LayerNorm(self.hidden_size) if layer_norm else None
 
@@ -369,34 +454,27 @@ class MPNEncoder(nn.Module):
             self.W_a = nn.Linear(self.hidden_size, self.hidden_size)
             self.W_b = nn.Linear(self.hidden_size, self.hidden_size)
 
-    def forward(self, mol_graph: BatchMolGraph, features_batch: List[np.ndarray] = None, viz_dir: str = None, device='cpu') -> torch.FloatTensor:
+    def forward(self, mol_graph: BatchMolGraph, device='cpu') -> torch.FloatTensor:
         """
         Encodes a batch of molecular graphs.
 
         :param mol_graph: A BatchMolGraph representing a batch of molecular graphs.
-        :param features_batch: A list of ndarrays containing additional features.
         :return: A PyTorch tensor of shape (num_molecules, hidden_size) containing the encoding of each molecule.
         """
-        if self.use_input_features:
-            features_batch = torch.from_numpy(np.stack(features_batch)).float().to(device)
 
-            if self.features_only:
-                return features_batch
-
-        f_atoms, f_bonds, a2b, b2a, b2revb, a_scope, b_scope = mol_graph.get_components()
-        f_atoms = f_atoms.to(device)
-        f_bonds = f_bonds.to(device)
-        a2b = a2b.to(device)
-        b2a = b2a.to(device)
-        b2revb = b2revb.to(device)
+        atom_features = mol_graph.atom_features.to(device)
+        bond_features = mol_graph.bond_features.to(device)
+        a2b = mol_graph.a2b.to(device)
+        b2a = mol_graph.b2a.to(device)
+        b2revb = mol_graph.b2revb.to(device)
 
         if self.atom_messages:
-            a2a = mol_graph.get_a2a()
+            a2a = mol_graph.get_neighbors()
 
         if self.atom_messages:
-            input = self.W_i(f_atoms)
+            input = self.W_i(atom_features)
         else:
-            input = self.W_i(f_bonds)
+            input = self.W_i(bond_features)
 
         message = self.act_func(input)
 
@@ -406,7 +484,7 @@ class MPNEncoder(nn.Module):
 
             if self.atom_messages:
                 nei_a_message = utils.index_select_ND(message, a2a)
-                nei_f_bonds = utils.index_select_ND(f_bonds, a2b)
+                nei_f_bonds = utils.index_select_ND(bond_features, a2b)
                 nei_message = torch.cat((nei_a_message, nei_f_bonds), dim=2)
                 message = nei_message.sum(dim=1)
             else:
@@ -431,14 +509,14 @@ class MPNEncoder(nn.Module):
         a_message = nei_a_message.sum(dim=1)
 
         if self.sumstyle==True:
-            a_input =self.W_ah(f_atoms) + a_message
+            a_input =self.W_ah(atom_features) + a_message
         else:
-            a_input = torch.cat([f_atoms, a_message], dim=1)
+            a_input = torch.cat([atom_features, a_message], dim=1)
         atom_hiddens = self.act_func(self.W_o(a_input))
         atom_hiddens = self.dropout_layer(atom_hiddens)
 
         mol_vecs = []
-        for i, (a_start, a_size) in enumerate(a_scope):
+        for i, (a_start, a_size) in enumerate(mol_graph.a_scope):
             if a_size == 0:
                 mol_vecs.append(self.cached_zero_vector)
             else:
@@ -456,12 +534,6 @@ class MPNEncoder(nn.Module):
                 mol_vecs.append(mol_vec)
 
         mol_vecs = torch.stack(mol_vecs, dim=0)
-
-        if self.use_input_features:
-            features_batch = features_batch.to(mol_vecs)
-            if len(features_batch.shape) == 1:
-                features_batch = features_batch.view([1,features_batch.shape[0]])
-            mol_vecs = torch.cat([mol_vecs, features_batch], dim=1)
 
         return mol_vecs
 
@@ -487,18 +559,16 @@ class MPN(nn.Module):
 
     def forward(self,
                 batch: Union[List[str], BatchMolGraph],
-                features_batch: List[np.ndarray] = None,
                 device='cpu') -> torch.FloatTensor:
         """
         Encodes a batch of molecular SMILES strings.
 
         :param batch: A list of SMILES strings or a BatchMolGraph (if self.graph_input is True).
-        :param features_batch: A list of ndarrays containing additional features.
         :return: A PyTorch tensor of shape (num_molecules, hidden_size) containing the encoding of each molecule.
         """
         if not self.graph_input:
             batch = mol2graph(batch, self.atom_messages)
 
-        output = self.encoder.forward(batch, features_batch, device=device)
+        output = self.encoder.forward(batch, device=device)
 
         return output

@@ -22,19 +22,20 @@ def main():
     else:
         raise ValueError('Invalid dataset type: {}'.format(args.dataset))
 
-    test_set = ds.DGLDataset(data_path, split='test', shuffle=True)
-    test_loader = data.DataLoader(test_set, batch_size=args.batch_size, num_workers=16, shuffle=True)
-
     # Initialize the metrics.
-    metric_funcs = list(utils.metrics.values())
+    metric_funcs = list(utils.get_metrics(args.model).values())
 
     # Create the model.
     if args.model == 'QSAR':
         model = models.QSAR()
     elif args.model == 'QSARPlus':
         model = models.QSARPlus()
+        args.batch_size = 1  # QSARPlus requires batch size of 1.
     else:
         raise ValueError('Invalid model type: {}'.format(args.model))
+
+    test_set = ds.DGLDataset(data_path, split='test', shuffle=True)
+    test_loader = data.DataLoader(test_set, batch_size=args.batch_size, num_workers=16, shuffle=True)
 
     # Test the best model.
     model.load_state_dict(torch.load(args.weights))
@@ -46,7 +47,7 @@ def main():
     with torch.no_grad():
         for smiles, labels in test_loader:
 
-            preds = model(smiles).squeeze()
+            preds = model(smiles)
 
             # Calculate metrics.
             for idx, metric_func in enumerate(metric_funcs):
@@ -54,7 +55,7 @@ def main():
 
     scores /= len(test_loader)
 
-    for metric_name, score in zip(utils.metrics.keys(), scores):
+    for metric_name, score in zip(utils.get_metrics(args.model).keys(), scores):
         print('{:<10} {:.4f}'.format(metric_name, score))
 
 

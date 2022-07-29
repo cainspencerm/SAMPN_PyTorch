@@ -1,6 +1,6 @@
 # SAMPN_PyTorch
 
-This is a torn down version of the original SAMPN repository (found [here](https://github.com/tbwxmu/SAMPN)).
+This is a torn down version of the original SAMPN repository (found [here](https://github.com/tbwxmu/SAMPN)). We also provide an improved model, which we refer to as `QSARPlus` following SAMPN's model titled `QSAR`.
 
 ## Training
 To train a model:
@@ -20,13 +20,13 @@ optional arguments:
   --dataset DATASET     Dataset type (lipophilicity or solubility).
 ```
 
-Our training results on lipophilicity:
+Training results on lipophilicity:
 
 ![](./screenshots/sampn_lipophilicity_train_loss.png)
 
 ![](./screenshots/sampn_lipophilicity_val_loss.png)
 
-Our training results on aqueous solubility:
+Training results on aqueous solubility:
 
 ![](./screenshots/sampn_solubility_train_loss.png)
 
@@ -54,20 +54,30 @@ optional arguments:
 Our test results on lipophilicity:
 
 ```bash
-$ python3 test.py --dataset lipophilicity --weights ./checkpoint/lipophilicity/model_state_dict.pt
+$ python3 test.py --dataset lipophilicity --model QSAR --weights ./checkpoint/lipophilicity/QSAR_state_dict.pt
 rmse       0.2979
 mae        0.2188
 mse        0.0894
 r2         0.9211
 pearson    0.9636
+
+$ python3 test.py --dataset lipophilicity --model QSARPlus --weights ./checkpoint/lipophilicity/QSARPlus_state_dict.pt
+rmse       0.5763
+mae        0.5763
+mse        0.5524
 ```
 
 Our test results on aqueous solubility:
 ```bash
-$ python3 test.py --dataset solubility --weights ./checkpoint/solubility/model_state_dict.pt
+$ python3 test.py --dataset solubility --model QSAR --weights ./checkpoint/solubility/QSAR_state_dict.pt
 rmse       0.7650
 mae        0.6428
 mse        0.5932
 r2         0.2540
 pearson    0.7287
+
+$ python3 test.py --dataset solubility --model QSARPlus --weights ./checkpoint/solubility/QSARPlus_state_dict.pt
+rmse       0.5362
+mae        0.5362
+mse        0.6376
 ```

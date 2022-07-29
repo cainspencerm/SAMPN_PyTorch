@@ -3,6 +3,9 @@ from typing import List
 import numpy as np
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import torch
+import dgl
+from rdkit import Chem
+from pprint import pprint
 
 # Metric utils.
 
@@ -28,13 +31,34 @@ def rmse(targets: List[float], preds: List[float]) -> float:
     """
     return math.sqrt(mean_squared_error(targets, preds))
 
-metrics = {
+_metrics_QSAR = {
     'rmse': rmse,
     'mae': mean_absolute_error,
     'mse': mean_squared_error,
     'r2': r2_score,
     'pearson': pearson_cor,
 }
+
+_metrics_QSARPlus = {
+    'rmse': rmse,
+    'mae': mean_absolute_error,
+    'mse': mean_squared_error,
+}
+
+def get_metrics(model_type):
+    """
+    Gets the metrics for a model.
+
+    :param model_type: The type of model.
+    :return: A list of metrics.
+    """
+
+    if model_type == 'QSAR':
+        return _metrics_QSAR
+    elif model_type == 'QSARPlus':
+        return _metrics_QSARPlus
+    else:
+        raise ValueError('Invalid model type.')
 
 
 # Torch utils.
@@ -70,3 +94,33 @@ def initialize_weights(model: torch.nn.Module):
             torch.nn.init.constant_(param, 0)
         else:
             torch.nn.init.xavier_normal_(param)
+
+
+# Graph utils.
+
+def get_graph(mol: Chem.Mol) -> dgl.DGLGraph:
+    """
+    Gets the graph of a molecule.
+
+    :param mol: A molecule string.
+    :return: A list of lists of integers representing the graph.
+    """
+
+    # Get the edge list (starting_nodes, ending_nodes).
+    starting_nodes, ending_nodes = [], []
+    for bond in mol.GetBonds():
+
+        # Start to end.
+        starting_nodes.append(bond.GetBeginAtomIdx())
+        ending_nodes.append(bond.GetEndAtomIdx())
+
+        # End to start.
+        starting_nodes.append(bond.GetEndAtomIdx())
+        ending_nodes.append(bond.GetBeginAtomIdx())
+
+    starting_nodes, ending_nodes = np.array(starting_nodes), np.array(ending_nodes)
+    
+    # Generate the graph.
+    graph = dgl.graph((starting_nodes, ending_nodes))
+
+    return graph
