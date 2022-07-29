@@ -12,7 +12,6 @@ def main():
     parser.add_argument('--dataset', type=str, default='lipophilicity', help='Dataset type (lipophilicity or solubility).')
     parser.add_argument('--model', type=str, default='QSAR', help='Model type (QSAR or QSARPlus).')
     parser.add_argument('--weights', type=str, default='./checkpoint/lipophilicity/model_state_dict.pt', help='Path to the model weights.')
-    parser.add_argument('--iterations', type=int, default=1, help='Number of iterations to run.')
     args = parser.parse_args()
 
     # Prepare dataset and dataloaders.
@@ -42,42 +41,21 @@ def main():
 
     model.eval()
 
-    scores = []
-    for i in range(args.iterations):
-        scores_i = np.zeros(len(metric_funcs))
+    scores = np.zeros(len(metric_funcs))
 
-        with torch.no_grad():
-            for smiles, labels in test_loader:
+    with torch.no_grad():
+        for smiles, labels in test_loader:
 
-                preds = model(smiles).squeeze()
+            preds = model(smiles).squeeze()
 
-                # Calculate metrics.
-                for idx, metric_func in enumerate(metric_funcs):
-                    scores_i[idx] += metric_func(preds, labels)
+            # Calculate metrics.
+            for idx, metric_func in enumerate(metric_funcs):
+                scores[idx] += metric_func(preds, labels)
 
-        scores_i /= len(test_loader)
-        scores.append(scores_i)
+    scores /= len(test_loader)
 
-        test_set.reshuffle()
-
-    """
-    average_scores shape: (iterations, len(metric_funcs))
-             | rmse | mse | mae | r2 | pearson |
-    ---------+------+-----+-----+----+---------+
-    iter 1   |      |     |     |    |         |
-    ---------+------+-----+-----+----+---------+
-    iter 2   |      |     |     |    |         |
-    ---------+------+-----+-----+----+---------+
-    ...      |      |     |     |    |         |
-    ---------+------+-----+-----+----+---------+
-    iter n   |      |     |     |    |         |
-    ---------+------+-----+-----+----+---------+
-    """
-    scores = np.array(scores) / args.iterations
-    average_scores = np.mean(scores, axis=0)
-    stddev_scores = np.std(scores, axis=0)
-    for metric_name, average_score, stddev_score in zip(utils.metrics.keys(), average_scores, stddev_scores):
-        print('{:<10} {:.4f} +/- {:.4f}'.format(metric_name, average_score, stddev_score))
+    for metric_name, score in zip(utils.metrics.keys(), scores):
+        print('{:<10} {:.4f}'.format(metric_name, score))
 
 
 if __name__ == '__main__':

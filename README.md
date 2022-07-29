@@ -51,6 +51,23 @@ optional arguments:
                         Number of iterations to run.
 ```
 
-Our test results on lipophilicity and aqueous solubility:
+Our test results on lipophilicity:
 
-![](./screenshots/sampn_test_results.png)
+```bash
+$ python3 test.py --dataset lipophilicity --weights ./checkpoint/lipophilicity/model_state_dict.pt
+rmse       0.2979
+mae        0.2188
+mse        0.0894
+r2         0.9211
+pearson    0.9636
+```
+
+Our test results on aqueous solubility:
+```bash
+$ python3 test.py --dataset solubility --weights ./checkpoint/solubility/model_state_dict.pt
+rmse       0.7650
+mae        0.6428
+mse        0.5932
+r2         0.2540
+pearson    0.7287
+```

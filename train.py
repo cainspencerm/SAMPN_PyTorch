@@ -37,9 +37,12 @@ def main():
     criterion = nn.MSELoss()
     metric_funcs = list(utils.metrics.values())
 
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     # Create the model.
     model = models.QSAR()
     utils.initialize_weights(model)
+    model.to(device)
 
     # Create the optimizer and scheduler.
     init_lr, max_lr, final_lr = 1e-4, 1e-3, 1e-4
@@ -65,12 +68,13 @@ def main():
         model.train()
         train_loss = 0.
         for smiles, labels in train_loader:
+            labels = labels.to(device)
 
             # Zero the gradients.
             optimizer.zero_grad()
 
             # Forward pass.
-            preds = model(smiles).squeeze()
+            preds = model(smiles, device=device).squeeze()
             loss = criterion(preds, labels)
 
             # Backward pass.
@@ -88,8 +92,9 @@ def main():
         val_loss = 0.
         with torch.no_grad():
             for smiles, labels in val_loader:
+                labels = labels.to(device)
                 
-                preds = model(smiles).squeeze()
+                preds = model(smiles, device=device).squeeze()
 
                 val_loss += criterion(preds, labels).item()
 
@@ -109,14 +114,18 @@ def main():
     writer.close()
 
     # Test the best model.
+    device = torch.device('cpu')
+
+    model = model.to(device)
     model.load_state_dict(torch.load(f'./checkpoint/{args.dataset}/model_state_dict.pt'))
 
     model.eval()
     scores = np.zeros(len(metric_funcs))
     with torch.no_grad():
         for smiles, labels in test_loader:
+            labels = labels.to(device)
 
-            preds = model(smiles).squeeze()
+            preds = model(smiles, device=device).squeeze()
 
             # Calculate metrics.
             for idx, metric_func in enumerate(metric_funcs):

@@ -74,14 +74,14 @@ class QSAR(nn.Module):
 
         self.ffn = nn.Sequential(*ffn)
 
-    def forward(self, mol_batch):
+    def forward(self, mol_batch, device=None):
         """
         Forward pass of the model.
         :param mol_batch: A batch of molecules.
         :return: The logits of the model.
         """
         # Get the features of the molecules.
-        features = self.encoder(mol_batch)
+        features = self.encoder(mol_batch, device=device)
 
         # Get the logits of the model.
         logits = self.ffn(features)
@@ -369,7 +369,7 @@ class MPNEncoder(nn.Module):
             self.W_a = nn.Linear(self.hidden_size, self.hidden_size)
             self.W_b = nn.Linear(self.hidden_size, self.hidden_size)
 
-    def forward(self, mol_graph: BatchMolGraph, features_batch: List[np.ndarray] = None, viz_dir: str = None) -> torch.FloatTensor:
+    def forward(self, mol_graph: BatchMolGraph, features_batch: List[np.ndarray] = None, viz_dir: str = None, device='cpu') -> torch.FloatTensor:
         """
         Encodes a batch of molecular graphs.
 
@@ -378,12 +378,17 @@ class MPNEncoder(nn.Module):
         :return: A PyTorch tensor of shape (num_molecules, hidden_size) containing the encoding of each molecule.
         """
         if self.use_input_features:
-            features_batch = torch.from_numpy(np.stack(features_batch)).float()
+            features_batch = torch.from_numpy(np.stack(features_batch)).float().to(device)
 
             if self.features_only:
                 return features_batch
 
         f_atoms, f_bonds, a2b, b2a, b2revb, a_scope, b_scope = mol_graph.get_components()
+        f_atoms = f_atoms.to(device)
+        f_bonds = f_bonds.to(device)
+        a2b = a2b.to(device)
+        b2a = b2a.to(device)
+        b2revb = b2revb.to(device)
 
         if self.atom_messages:
             a2a = mol_graph.get_a2a()
@@ -482,7 +487,8 @@ class MPN(nn.Module):
 
     def forward(self,
                 batch: Union[List[str], BatchMolGraph],
-                features_batch: List[np.ndarray] = None) -> torch.FloatTensor:
+                features_batch: List[np.ndarray] = None,
+                device='cpu') -> torch.FloatTensor:
         """
         Encodes a batch of molecular SMILES strings.
 
@@ -493,6 +499,6 @@ class MPN(nn.Module):
         if not self.graph_input:
             batch = mol2graph(batch, self.atom_messages)
 
-        output = self.encoder.forward(batch, features_batch)
+        output = self.encoder.forward(batch, features_batch, device=device)
 
         return output
